@@ -1,0 +1,28 @@
+[package]
+name = "async-local-executor"
+version = "0.1.0"
+authors = ["Jayce Fayne <jayce.fayne@mailbox.org>"]
+repository = "https://github.com/jaycefayne/async-local-executor"
+edition = "2024"
+description = "Lightweight executor for building single-threaded async runtimes."
+license = "MIT"
+categories = ["asynchronous", "concurrency"]
+keywords = ["asynchronous", "executor", "single-threaded", "futures", "spawn"]
+readme = "README.md"
+
+[dependencies]
+slotmap = "1"
+async-local-channel = "0.9"
+async-compat = { version = "0.2", optional = true }
+
+[features]
+tokio = ["dep:async-compat"]
+
+[dev-dependencies]
+async-io = "2"
+tokio = { version = "1", features = ["time"] }
+
+[[example]]
+name = "tokio"
+path = "examples/tokio.rs"
+required-features = ["tokio"]
