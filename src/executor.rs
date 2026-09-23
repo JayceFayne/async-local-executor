@@ -40,7 +40,6 @@ struct Task {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[must_use]
 pub struct TaskHandle {
     id: TaskId,
 }
