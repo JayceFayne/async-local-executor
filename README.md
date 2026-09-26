@@ -13,7 +13,7 @@ Lightweight executor for building single-threaded async runtimes.
 
 ## Why?
 
-This crate provides an `Executor` for spawning and executing `!Send` futures without locks. It is meant to be integrated into an existing event loop and driven by that event loop whenever tasks need to make progress. This crate providies the task execution layer while leaving I/O, timers, and event handling to the external event loop.
+This crate provides an `Executor` for spawning and executing `!Send` futures without locks. It is meant to be integrated into an existing event loop and driven by that event loop whenever tasks need to make progress.
 
 ## Usage
 
@@ -63,7 +63,7 @@ fn main() {
 
 ```
 
-This is basically the implementation of `block_on`
+This is basically the implementation of [block_on](https://github.com/JayceFayne/async-local-executor/blob/master/src/lib.rs#L26)
 
 ## Contributing
 
