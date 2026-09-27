@@ -20,11 +20,11 @@ struct WakerData {
 
 impl Wake for WakerData {
     fn wake(self: Arc<Self>) {
-        (self.f)(self.handle);
+        (self.f)(self.handle.dup());
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        (self.f)(self.handle);
+        (self.f)(self.handle.dup());
     }
 }
 
@@ -39,7 +39,6 @@ struct Task {
     waker: Waker,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct TaskHandle {
     id: TaskId,
 }
@@ -51,6 +50,10 @@ impl Debug for TaskHandle {
 }
 
 impl TaskHandle {
+    const fn dup(&self) -> Self {
+        Self { id: self.id }
+    }
+
     #[inline]
     pub fn tick(self) {
         if let Some(ticker) = { executor().ticker(self) } {
@@ -130,7 +133,7 @@ impl<T> Drop for JoinHandle<T> {
         if !self.detached
             && let Some(mut executor) = try_executor()
         {
-            executor.task_completed(self.handle);
+            executor.task_completed(self.handle.dup());
         }
     }
 }
@@ -172,7 +175,7 @@ impl Executor {
             Some(Task { future, waker })
         });
         let handle = TaskHandle { id };
-        (self.waker_fn)(handle);
+        (self.waker_fn)(handle.dup());
         JoinHandle::new(handle, rx.activate())
     }
 
