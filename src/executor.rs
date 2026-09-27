@@ -173,6 +173,10 @@ impl Executor {
         JoinHandle::new(task_id, rx.activate())
     }
 
+    pub(crate) fn exit(&mut self) {
+        self.tasks.clear();
+    }
+
     pub(crate) fn ticker(&mut self) -> Option<Ticker> {
         let task_id = self.queue.pop()?;
         let task = self.tasks.get_mut(task_id)?.take()?;
@@ -184,6 +188,9 @@ impl Executor {
     }
 
     fn return_poller(&mut self, ticker: Ticker) {
-        self.tasks[ticker.task_id] = Some(ticker.task);
+        let Some(task) = self.tasks.get_mut(ticker.task_id) else {
+            return;
+        };
+        *task = Some(ticker.task);
     }
 }

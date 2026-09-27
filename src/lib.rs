@@ -32,6 +32,11 @@ pub fn tick() -> bool {
     }
 }
 
+#[inline]
+pub fn exit() {
+    executor().exit();
+}
+
 fn run<F>(future: F) -> F::Output
 where
     F: IntoFuture + 'static,
