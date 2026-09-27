@@ -8,9 +8,9 @@ mod tests;
 mod tls;
 
 use crate::tls::executor;
-use std::sync::mpsc;
+use std::thread;
 
-pub use crate::executor::{Executor, JoinHandle, TaskHandle};
+pub use crate::executor::{Executor, JoinHandle};
 
 #[inline]
 pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
@@ -23,19 +23,36 @@ where
 }
 
 #[inline]
+pub fn tick() -> bool {
+    if let Some(ticker) = { executor().ticker() } {
+        ticker.tick();
+        true
+    } else {
+        false
+    }
+}
+
+fn run<F>(future: F) -> F::Output
+where
+    F: IntoFuture + 'static,
+{
+    let main = spawn_local(future);
+    loop {
+        while tick() {
+            if let Some(result) = main.result() {
+                return result;
+            }
+        }
+        thread::park();
+    }
+}
+
+#[inline]
 pub fn block_on<F>(future: F) -> F::Output
 where
     F: IntoFuture + 'static,
 {
-    let (tx, rx) = mpsc::channel();
-    let mut ex = Executor::new(move |task| tx.send(task).unwrap());
-    ex.run_in(|| {
-        let main = spawn_local(future);
-        loop {
-            rx.recv().unwrap().tick();
-            if let Some(result) = main.result() {
-                break result;
-            }
-        }
-    })
+    let thread = thread::current();
+    let mut executor = Executor::new(move || thread.unpark());
+    executor.run_in(|| run(future))
 }

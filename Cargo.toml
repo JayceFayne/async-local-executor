@@ -14,6 +14,7 @@ readme = "README.md"
 slotmap = "1"
 async-local-channel = "0.9"
 async-compat = { version = "0.2", optional = true }
+crossbeam-queue = "0.3"
 
 [features]
 tokio = ["dep:async-compat"]

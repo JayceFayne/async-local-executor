@@ -1,5 +1,6 @@
 use crate::tls::{executor, try_executor};
 use async_local_channel::oneshot;
+use crossbeam_queue::SegQueue;
 use slotmap::new_key_type;
 use slotmap::{Key, SlotMap};
 use std::fmt::Debug;
@@ -11,25 +12,36 @@ use std::task::{Context, Poll};
 
 new_key_type! { pub struct TaskId; }
 
-type WakerFn = Arc<dyn Fn(TaskHandle) + Send + Sync>;
+type WakeFn = Arc<dyn Fn() + Send + Sync>;
 
 struct WakerData {
-    handle: TaskHandle,
-    f: WakerFn,
+    task_id: TaskId,
+    queue: Arc<SegQueue<TaskId>>,
+    wake_fn: WakeFn,
 }
 
 impl Wake for WakerData {
     fn wake(self: Arc<Self>) {
-        (self.f)(self.handle.dup());
+        self.queue.push(self.task_id);
+        (self.wake_fn)();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        (self.f)(self.handle.dup());
+        self.queue.push(self.task_id);
+        (self.wake_fn)();
     }
 }
 
-fn create_waker(handle: TaskHandle, f: WakerFn) -> Waker {
-    Waker::from(Arc::new(WakerData { handle, f }))
+fn create_waker(
+    task_id: TaskId,
+    tx: Arc<SegQueue<TaskId>>,
+    wake_fn: Arc<dyn Fn() + Send + Sync>,
+) -> Waker {
+    Waker::from(Arc::new(WakerData {
+        task_id,
+        queue: tx,
+        wake_fn,
+    }))
 }
 
 type LocalFuture = Pin<Box<dyn Future<Output = ()>>>;
@@ -39,32 +51,9 @@ struct Task {
     waker: Waker,
 }
 
-pub struct TaskHandle {
-    id: TaskId,
-}
-
-impl Debug for TaskHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.id.data().fmt(f)
-    }
-}
-
-impl TaskHandle {
-    const fn dup(&self) -> Self {
-        Self { id: self.id }
-    }
-
-    #[inline]
-    pub fn tick(self) {
-        if let Some(ticker) = { executor().ticker(self) } {
-            ticker.tick();
-        }
-    }
-}
-
 #[must_use]
 pub struct Ticker {
-    handle: TaskHandle,
+    task_id: TaskId,
     task: Task,
 }
 
@@ -73,7 +62,7 @@ impl Ticker {
     pub fn tick(mut self) {
         let mut context = Context::from_waker(&self.task.waker);
         if pin!(&mut self.task.future).poll(&mut context).is_ready() {
-            executor().task_completed(self.handle);
+            executor().task_completed(self.task_id);
         } else {
             executor().return_poller(self);
         }
@@ -82,23 +71,23 @@ impl Ticker {
 
 #[must_use = "tasks get canceled when dropped, use `.detach()` to run them in the background"]
 pub struct JoinHandle<T> {
-    handle: TaskHandle,
+    task_id: TaskId,
     result: oneshot::Receiver<T>,
     detached: bool,
 }
 
 impl<T> Debug for JoinHandle<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JoinHandle")
-            .field("task", &self.handle)
+        f.debug_tuple("JoinHandle")
+            .field(&self.task_id.data())
             .finish()
     }
 }
 
 impl<T> JoinHandle<T> {
-    const fn new(handle: TaskHandle, result: oneshot::Receiver<T>) -> Self {
+    const fn new(task_id: TaskId, result: oneshot::Receiver<T>) -> Self {
         Self {
-            handle,
+            task_id,
             result,
             detached: false,
         }
@@ -133,14 +122,15 @@ impl<T> Drop for JoinHandle<T> {
         if !self.detached
             && let Some(mut executor) = try_executor()
         {
-            executor.task_completed(self.handle.dup());
+            executor.task_completed(self.task_id);
         }
     }
 }
 
 pub struct Executor {
     tasks: SlotMap<TaskId, Option<Task>>,
-    waker_fn: WakerFn,
+    wake_fn: WakeFn,
+    queue: Arc<SegQueue<TaskId>>,
 }
 
 impl Debug for Executor {
@@ -151,10 +141,14 @@ impl Debug for Executor {
 
 impl Executor {
     #[inline]
-    pub fn new<F: Fn(TaskHandle) + Send + Sync + 'static>(f: F) -> Self {
+    pub fn new<F: Fn() + Send + Sync + 'static>(f: F) -> Self {
+        let queue = Arc::new(SegQueue::new());
+        let tasks = SlotMap::with_key();
+        let wake_fn = Arc::new(f);
         Self {
-            tasks: SlotMap::with_key(),
-            waker_fn: Arc::new(f),
+            tasks,
+            wake_fn,
+            queue,
         }
     }
 
@@ -168,27 +162,28 @@ impl Executor {
             let res = future.await;
             let _ = tx.send(res);
         };
-        let waker_fn = self.waker_fn.clone();
         let future = Box::pin(future);
-        let id = self.tasks.insert_with_key(|id| {
-            let waker = create_waker(TaskHandle { id }, waker_fn);
+        let wake_fn = self.wake_fn.clone();
+        let task_id = self.tasks.insert_with_key(|id| {
+            let waker = create_waker(id, self.queue.clone(), wake_fn);
             Some(Task { future, waker })
         });
-        let handle = TaskHandle { id };
-        (self.waker_fn)(handle.dup());
-        JoinHandle::new(handle, rx.activate())
+        self.queue.push(task_id);
+        (self.wake_fn)();
+        JoinHandle::new(task_id, rx.activate())
     }
 
-    fn ticker(&mut self, handle: TaskHandle) -> Option<Ticker> {
-        let task = self.tasks.get_mut(handle.id)?.take()?;
-        Some(Ticker { handle, task })
+    pub(crate) fn ticker(&mut self) -> Option<Ticker> {
+        let task_id = self.queue.pop()?;
+        let task = self.tasks.get_mut(task_id)?.take()?;
+        Some(Ticker { task_id, task })
     }
 
-    fn task_completed(&mut self, handle: TaskHandle) {
-        self.tasks.remove(handle.id);
+    fn task_completed(&mut self, task_id: TaskId) {
+        self.tasks.remove(task_id);
     }
 
     fn return_poller(&mut self, ticker: Ticker) {
-        self.tasks[ticker.handle.id] = Some(ticker.task);
+        self.tasks[ticker.task_id] = Some(ticker.task);
     }
 }
