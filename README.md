@@ -22,25 +22,30 @@ A short example of building a runtime on top of `Executor` is shown below.
 
 ```rust
 use async_io::Timer;
-use async_local_executor::{spawn_local, Executor};
+use async_local_executor::{spawn_local, Executor, run_ready_tasks, exit};
 use std::sync::mpsc;
 use std::time::Duration;
+use std::thread;
 
 pub fn block_on<F>(future: F) -> F::Output
 where
     F: IntoFuture + 'static,
 {
-    let (tx, rx) = mpsc::channel();
-    let mut ex = Executor::new(move |task| tx.send(task).unwrap());
-    ex.run_in(|| {
-        let main = spawn_local(future);
-        loop {
-            rx.recv().unwrap().tick();
-            if let Some(result) = main.result() {
-                break result;
-            }
+    let thread = thread::current();
+    let mut executor = Executor::new(move || thread.unpark());
+    let _guard = executor.enter();
+    let main = spawn_local(async move {
+        let result = future.await;
+        exit();
+        result
+    });
+    loop {
+        run_ready_tasks();
+        if let Some(result) = main.result() {
+            return result;
         }
-    })
+        thread::park();
+    }
 }
 
 fn main() {
@@ -50,8 +55,7 @@ fn main() {
                 println!("Hello, again!");
                 Timer::after(Duration::from_secs(1)).await;
             }
-        })
-        .detach();
+        });
         for _ in 0..3 {
             println!("Hello, world!");
             Timer::after(Duration::from_secs(1)).await;
@@ -63,7 +67,7 @@ fn main() {
 
 ```
 
-This is basically the implementation of [block_on](https://github.com/JayceFayne/async-local-executor/blob/master/src/lib.rs#L26)
+This is basically the implementation of [block_on](https://github.com/JayceFayne/async-local-executor/blob/master/src/lib.rs#L39)
 
 ## Contributing
 
