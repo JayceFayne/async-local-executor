@@ -72,11 +72,10 @@ impl Ticker {
     }
 }
 
-#[must_use = "tasks get canceled when dropped, use `.detach()` to run them in the background"]
 pub struct JoinHandle<T> {
     task_id: TaskId,
     result: oneshot::Receiver<T>,
-    detached: bool,
+    cancel: bool,
 }
 
 impl<T> Debug for JoinHandle<T> {
@@ -92,13 +91,13 @@ impl<T> JoinHandle<T> {
         Self {
             task_id,
             result,
-            detached: false,
+            cancel: false,
         }
     }
 
     #[inline]
-    pub fn detach(mut self) {
-        self.detached = true;
+    pub fn cancel(mut self) {
+        self.cancel = true;
     }
 
     #[inline]
@@ -122,7 +121,7 @@ impl<T: 'static> Future for JoinHandle<T> {
 impl<T> Drop for JoinHandle<T> {
     #[inline]
     fn drop(&mut self) {
-        if !self.detached
+        if self.cancel
             && let Some(mut executor) = try_executor()
         {
             executor.task_completed(self.task_id);

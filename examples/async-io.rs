@@ -9,8 +9,7 @@ fn main() {
                 println!("Hello, again!");
                 Timer::after(Duration::from_secs(1)).await;
             }
-        })
-        .detach();
+        });
         for _ in 0..3 {
             println!("Hello, world!");
             Timer::after(Duration::from_secs(1)).await;

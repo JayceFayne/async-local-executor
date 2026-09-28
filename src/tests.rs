@@ -8,7 +8,7 @@ fn simple() {
                 println!("Hello, again!");
             }
         })
-        .detach();
+        .cancel();
         for _ in 0..3 {
             println!("Hello, world!");
         }
