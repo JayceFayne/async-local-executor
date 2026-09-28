@@ -24,17 +24,7 @@ where
 }
 
 #[inline]
-pub fn tick() -> bool {
-    if let Some(ticker) = { executor().ticker() } {
-        ticker.tick();
-        true
-    } else {
-        false
-    }
-}
-
-#[inline]
-pub fn run() {
+pub fn run_ready_tasks() {
     while let Some(ticker) = { executor().ticker() } {
         ticker.tick();
     }
@@ -50,21 +40,19 @@ pub fn block_on<F>(future: F) -> F::Output
 where
     F: IntoFuture + 'static,
 {
-    fn run<F>(future: F) -> F::Output
-    where
-        F: IntoFuture + 'static,
-    {
-        let main = spawn_local(future);
-        loop {
-            while tick() {
-                if let Some(result) = main.result() {
-                    return result;
-                }
-            }
-            thread::park();
-        }
-    }
     let thread = thread::current();
     let mut executor = Executor::new(move || thread.unpark());
-    executor.run_in(|| run(future))
+    let _guard = executor.enter();
+    let main = spawn_local(async move {
+        let result = future.await;
+        exit();
+        result
+    });
+    loop {
+        run_ready_tasks();
+        if let Some(result) = main.result() {
+            return result;
+        }
+        thread::park();
+    }
 }
