@@ -33,23 +33,15 @@ pub fn tick() -> bool {
 }
 
 #[inline]
-pub fn exit() {
-    executor().exit();
+pub fn run() {
+    while let Some(ticker) = { executor().ticker() } {
+        ticker.tick();
+    }
 }
 
-fn run<F>(future: F) -> F::Output
-where
-    F: IntoFuture + 'static,
-{
-    let main = spawn_local(future);
-    loop {
-        while tick() {
-            if let Some(result) = main.result() {
-                return result;
-            }
-        }
-        thread::park();
-    }
+#[inline]
+pub fn exit() {
+    executor().exit();
 }
 
 #[inline]
@@ -57,6 +49,20 @@ pub fn block_on<F>(future: F) -> F::Output
 where
     F: IntoFuture + 'static,
 {
+    fn run<F>(future: F) -> F::Output
+    where
+        F: IntoFuture + 'static,
+    {
+        let main = spawn_local(future);
+        loop {
+            while tick() {
+                if let Some(result) = main.result() {
+                    return result;
+                }
+            }
+            thread::park();
+        }
+    }
     let thread = thread::current();
     let mut executor = Executor::new(move || thread.unpark());
     executor.run_in(|| run(future))
