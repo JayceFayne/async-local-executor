@@ -1,5 +1,6 @@
 use crate::executor::Executor;
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::{mem, ptr};
 
@@ -8,6 +9,7 @@ thread_local! {
 }
 
 #[must_use = "deref in order to access the executor"]
+#[derive(Debug)]
 pub struct ExecutorGuard {
     executor: &'static mut Executor,
 }
@@ -48,12 +50,31 @@ pub fn executor() -> ExecutorGuard {
     try_executor().unwrap_or_else(no_executor)
 }
 
+pub struct EnterGuard<'a> {
+    marker: PhantomData<&'a mut Executor>,
+}
+
+impl Drop for EnterGuard<'_> {
+    fn drop(&mut self) {
+        let _ = EXECUTOR.try_with(Cell::take);
+    }
+}
+
 impl Executor {
     #[inline]
-    pub fn run_in<O, F: FnOnce() -> O>(&mut self, fun: F) -> O {
+    pub fn enter(&mut self) -> EnterGuard<'_> {
         let prev = EXECUTOR.replace(Some(unsafe { mem::transmute(self) }));
+        assert!(prev.is_none(), "there can only be one executor present");
+        EnterGuard {
+            marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn run_in<O, F: FnOnce() -> O>(&mut self, fun: F) -> O {
+        let guard = self.enter();
         let ret = fun();
-        EXECUTOR.replace(prev).unwrap_or_else(no_executor);
+        drop(guard);
         ret
     }
 }

@@ -11,6 +11,7 @@ use crate::tls::executor;
 use std::thread;
 
 pub use crate::executor::{Executor, JoinHandle};
+pub use crate::tls::EnterGuard;
 
 #[inline]
 pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
