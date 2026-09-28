@@ -3,6 +3,7 @@ use async_local_channel::oneshot;
 use crossbeam_queue::SegQueue;
 use slotmap::new_key_type;
 use slotmap::{Key, SlotMap};
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::pin::{Pin, pin};
 use std::sync::Arc;
@@ -22,11 +23,13 @@ struct WakerData {
 
 impl Wake for WakerData {
     fn wake(self: Arc<Self>) {
-        self.queue.push(self.task_id);
-        (self.wake_fn)();
+        self.wake_by_ref();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
+        if let Some(mut executor) = try_executor() {
+            return executor.local_queue.push_back(self.task_id);
+        }
         self.queue.push(self.task_id);
         (self.wake_fn)();
     }
@@ -130,6 +133,7 @@ impl<T> Drop for JoinHandle<T> {
 pub struct Executor {
     tasks: SlotMap<TaskId, Option<Task>>,
     wake_fn: WakeFn,
+    local_queue: VecDeque<TaskId>,
     queue: Arc<SegQueue<TaskId>>,
 }
 
@@ -142,12 +146,14 @@ impl Debug for Executor {
 impl Executor {
     #[inline]
     pub fn new<F: Fn() + Send + Sync + 'static>(f: F) -> Self {
-        let queue = Arc::new(SegQueue::new());
         let tasks = SlotMap::with_key();
         let wake_fn = Arc::new(f);
+        let queue = Arc::new(SegQueue::new());
+        let local_queue = VecDeque::new();
         Self {
             tasks,
             wake_fn,
+            local_queue,
             queue,
         }
     }
@@ -163,13 +169,11 @@ impl Executor {
             let _ = tx.send(res);
         };
         let future = Box::pin(future);
-        let wake_fn = self.wake_fn.clone();
         let task_id = self.tasks.insert_with_key(|id| {
-            let waker = create_waker(id, self.queue.clone(), wake_fn);
+            let waker = create_waker(id, self.queue.clone(), self.wake_fn.clone());
             Some(Task { future, waker })
         });
-        self.queue.push(task_id);
-        (self.wake_fn)();
+        self.local_queue.push_back(task_id);
         JoinHandle::new(task_id, rx.activate())
     }
 
@@ -177,8 +181,18 @@ impl Executor {
         self.tasks.clear();
     }
 
+    fn next_task_id(&mut self) -> Option<TaskId> {
+        if let Some(task_id) = self.local_queue.pop_front() {
+            return Some(task_id);
+        }
+        while let Some(task_id) = self.queue.pop() {
+            self.local_queue.push_back(task_id);
+        }
+        self.local_queue.pop_front()
+    }
+
     pub(crate) fn ticker(&mut self) -> Option<Ticker> {
-        let task_id = self.queue.pop()?;
+        let task_id = self.next_task_id()?;
         let task = self.tasks.get_mut(task_id)?.take()?;
         Some(Ticker { task_id, task })
     }
