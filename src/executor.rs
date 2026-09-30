@@ -28,7 +28,7 @@ impl Wake for WakerData {
 
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(mut executor) = try_executor() {
-            return executor.local_queue.push_back(self.task_id);
+            return executor.schedule_task(self.task_id);
         }
         self.queue.push(self.task_id);
         (self.wake_fn)();
@@ -49,25 +49,30 @@ fn create_waker(
 
 type LocalFuture = Pin<Box<dyn Future<Output = ()>>>;
 
-struct Task {
+struct TaskState {
     future: LocalFuture,
     waker: Waker,
+}
+
+struct Task {
+    state: Option<TaskState>,
+    queued: bool,
 }
 
 #[must_use]
 pub struct Ticker {
     task_id: TaskId,
-    task: Task,
+    task: TaskState,
 }
 
 impl Ticker {
     #[inline]
     pub fn tick(mut self) {
-        let mut context = Context::from_waker(&self.task.waker);
-        if pin!(&mut self.task.future).poll(&mut context).is_ready() {
+        let mut cx = Context::from_waker(&self.task.waker);
+        if self.task.future.as_mut().poll(&mut cx).is_ready() {
             executor().task_completed(self.task_id);
         } else {
-            executor().return_poller(self);
+            executor().return_ticker(self);
         }
     }
 }
@@ -130,7 +135,7 @@ impl<T> Drop for JoinHandle<T> {
 }
 
 pub struct Executor {
-    tasks: SlotMap<TaskId, Option<Task>>,
+    tasks: SlotMap<TaskId, Task>,
     wake_fn: WakeFn,
     local_queue: VecDeque<TaskId>,
     queue: Arc<SegQueue<TaskId>>,
@@ -170,7 +175,10 @@ impl Executor {
         let future = Box::pin(future);
         let task_id = self.tasks.insert_with_key(|id| {
             let waker = create_waker(id, self.queue.clone(), self.wake_fn.clone());
-            Some(Task { future, waker })
+            Task {
+                state: Some(TaskState { future, waker }),
+                queued: false,
+            }
         });
         self.local_queue.push_back(task_id);
         JoinHandle::new(task_id, rx.activate())
@@ -180,19 +188,30 @@ impl Executor {
         self.tasks.clear();
     }
 
+    fn schedule_task(&mut self, task_id: TaskId) {
+        if let Some(task) = self.tasks.get_mut(task_id)
+            && !task.queued
+        {
+            task.queued = true;
+            self.local_queue.push_back(task_id);
+        }
+    }
+
     fn next_task_id(&mut self) -> Option<TaskId> {
         if let Some(task_id) = self.local_queue.pop_front() {
             return Some(task_id);
         }
         while let Some(task_id) = self.queue.pop() {
-            self.local_queue.push_back(task_id);
+            self.schedule_task(task_id);
         }
         self.local_queue.pop_front()
     }
 
     pub(crate) fn ticker(&mut self) -> Option<Ticker> {
         let task_id = self.next_task_id()?;
-        let task = self.tasks.get_mut(task_id)?.take()?;
+        let task = self.tasks.get_mut(task_id)?;
+        task.queued = false;
+        let task = task.state.take()?;
         Some(Ticker { task_id, task })
     }
 
@@ -200,10 +219,10 @@ impl Executor {
         self.tasks.remove(task_id);
     }
 
-    fn return_poller(&mut self, ticker: Ticker) {
+    fn return_ticker(&mut self, ticker: Ticker) {
         let Some(task) = self.tasks.get_mut(ticker.task_id) else {
             return;
         };
-        *task = Some(ticker.task);
+        task.state = Some(ticker.task);
     }
 }
