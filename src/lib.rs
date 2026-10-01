@@ -50,8 +50,8 @@ where
     });
     loop {
         run_ready_tasks();
-        if let Some(result) = main.result() {
-            return result;
+        if main.is_finished() {
+            return main.result().unwrap();
         }
         thread::park();
     }

@@ -107,7 +107,13 @@ impl<T> JoinHandle<T> {
 
     #[inline]
     #[must_use]
-    pub fn result(&self) -> Option<T> {
+    pub fn is_finished(&self) -> bool {
+        self.result.is_closed()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn result(self) -> Option<T> {
         self.result.try_recv()
     }
 }
@@ -177,11 +183,11 @@ impl Executor {
             let waker = create_waker(id, self.queue.clone(), self.wake_fn.clone());
             Task {
                 state: Some(TaskState { future, waker }),
-                queued: false,
+                queued: true,
             }
         });
         self.local_queue.push_back(task_id);
-        JoinHandle::new(task_id, rx.activate())
+        JoinHandle::new(task_id, rx)
     }
 
     pub(crate) fn exit(&mut self) {

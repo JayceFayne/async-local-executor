@@ -12,7 +12,7 @@ readme = "README.md"
 
 [dependencies]
 slotmap = "1"
-async-local-channel = "0.10"
+async-local-channel = "0.11"
 async-compat = { version = "0.2", optional = true }
 crossbeam-queue = "0.3"
 
